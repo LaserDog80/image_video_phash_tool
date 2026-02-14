@@ -7,39 +7,34 @@
 
 ## Project Overview
 
-<!-- Update this section when the project scope changes -->
-
-[Project name and one-line description]
+Media Pairing Tool — matches image files to video files using perceptual hashing, with a tkinter test GUI for debugging.
 
 ---
 
 ## Tech Stack
 
-- **Language:** Python 3.x
-- **Web framework:** [Flask/FastAPI/None—update as needed]
+- **Language:** Python 3.12+
+- **Web framework:** None (tkinter for test GUI)
 - **Testing:** pytest
-- **Package manager:** pip (use requirements.txt)
+- **Package manager:** uv (use `uv pip install -r requirements.txt`)
+- **Key libraries:** opencv-python, Pillow, ImageHash, numpy, tkinterdnd2 (optional)
 
 ---
 
 ## Development Workflow
 
 ```bash
-# 1. Create virtual environment (first time only)
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+# 1. Install dependencies
+uv pip install -r requirements.txt
 
-# 2. Install dependencies
-pip install -r requirements.txt
+# 2. Run tests
+.venv/bin/python -m pytest tests/ -v
 
-# 3. Run tests
-pytest
+# 3. Launch the test GUI
+.venv/bin/python -m media_pairing.test_gui
 
-# 4. Run local server (if web-based)
-python app.py  # or: flask run / uvicorn main:app
-
-# 5. Before committing
-pytest && git add -A && git commit -m "message"
+# 4. Before committing
+.venv/bin/python -m pytest tests/ && git add -A && git commit -m "message"
 ```
 
 ---
@@ -57,11 +52,14 @@ pytest && git add -A && git commit -m "message"
 
 ```
 project/
-├── src/              # Main source code
-├── tests/            # Test files (mirror src/ structure)
-├── requirements.txt  # Dependencies
-├── app.py            # Entry point (if web-based)
-└── README.md         # User-facing documentation
+├── media_pairing/            # Main package
+│   ├── __init__.py
+│   ├── pairing_engine.py     # Core matching engine (reusable component)
+│   └── test_gui.py           # Tkinter test harness (developer tool)
+├── tests/                    # pytest tests
+│   └── test_pairing_engine.py
+├── requirements.txt          # Dependencies
+└── README.md
 ```
 
 ---
