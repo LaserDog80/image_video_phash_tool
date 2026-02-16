@@ -17,6 +17,7 @@ from tkinter import filedialog, ttk
 from typing import Optional
 
 from media_pairing.file_renamer import MediaFileRenamer, RenameResult
+from media_pairing.file_scanner import scan_directory
 from media_pairing.pairing_engine import (
     IMAGE_EXTENSIONS,
     VIDEO_EXTENSIONS,
@@ -100,6 +101,17 @@ class MediaPairingGUI:
         # Top frame: file lists (images + videos side by side)
         file_frame = ttk.LabelFrame(self.root, text="Files", padding=6)
         file_frame.pack(fill="x", padx=8, pady=(8, 4))
+
+        # Load Folder button — scans a directory for images and videos
+        folder_frame = ttk.Frame(file_frame)
+        folder_frame.pack(fill="x", pady=(0, 4))
+        ttk.Button(
+            folder_frame, text="Load Folder", command=self._load_folder
+        ).pack(side="left")
+        self.recursive_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            folder_frame, text="Recursive", variable=self.recursive_var
+        ).pack(side="left", padx=(8, 0))
 
         # Image list
         img_frame = ttk.Frame(file_frame)
@@ -372,6 +384,24 @@ class MediaPairingGUI:
                 self.video_listbox.insert("end", Path(path).name)
         else:
             logger.warning("Skipped unrecognised file type: %s", Path(path).name)
+
+    def _load_folder(self) -> None:
+        """Open a directory chooser and stage all images and videos found."""
+        folder = filedialog.askdirectory(title="Select Root Folder")
+        if not folder:
+            return
+
+        result = scan_directory(folder, recursive=self.recursive_var.get())
+
+        for p in result.image_paths:
+            if p not in self.image_paths:
+                self.image_paths.append(p)
+                self.image_listbox.insert("end", Path(p).name)
+
+        for p in result.video_paths:
+            if p not in self.video_paths:
+                self.video_paths.append(p)
+                self.video_listbox.insert("end", Path(p).name)
 
     def _remove_selected_images(self) -> None:
         self._remove_from_listbox(self.image_listbox, "image")
