@@ -1,14 +1,16 @@
 """Copy matched videos to an output folder with structured names.
 
 Given a :class:`PairingResult` from the pairing engine, this module copies
-each matched video renamed to ``{image_stem}_{suffix}_{NNN}{video_ext}`` —
+each matched video renamed to ``{image_stem}_{NNN}_{suffix}{video_ext}`` —
 where *suffix* is a user-provided label and *NNN* is a zero-padded sequence
-number ordered by match quality (best match = 001).
+number.  Within each image group, videos are ordered by triage tier
+(YES → unknown → MAYBE), then by match distance (best first).
 """
 
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 import time
 from collections import defaultdict
@@ -39,6 +41,10 @@ class MediaFileRenamer:
             (e.g. ``"V"`` produces ``image_001_V.mp4``).
         overwrite: If ``True``, overwrite existing files in the output dir.
         dry_run: If ``True``, compute the rename plan but don't copy anything.
+        strip_image_suffix: If provided, strip this string from the end of
+            the image stem before building the output name (e.g. ``"_S"``
+            turns ``SPT25_SC38_002_S`` into ``SPT25_SC38_002``).
+        seq_padding: Zero-pad width for the sequence number (default 3).
 
     Raises:
         ValueError: If *suffix* is empty or whitespace-only.
@@ -50,6 +56,8 @@ class MediaFileRenamer:
         suffix: str,
         overwrite: bool = False,
         dry_run: bool = False,
+        strip_image_suffix: str | None = None,
+        seq_padding: int = 3,
     ) -> None:
         if not suffix or not suffix.strip():
             raise ValueError("A suffix is required (e.g. 'V', 'GRADE', 'EDIT').")
@@ -57,12 +65,52 @@ class MediaFileRenamer:
         self.suffix = suffix.strip()
         self.overwrite = overwrite
         self.dry_run = dry_run
+        self.strip_image_suffix = strip_image_suffix
+        self.seq_padding = seq_padding
 
     # ------------------------------------------------------------------
-    # Planning (pure logic, no I/O)
+    # Output folder scan
     # ------------------------------------------------------------------
 
-    def plan_renames(self, pairing_result: PairingResult) -> list[dict]:
+    def scan_existing_sequences(self) -> dict[str, int]:
+        """Scan output_dir for existing files and return the highest
+        sequence number per stem prefix.
+
+        Returns:
+            Dict mapping stem prefix to highest existing sequence number.
+            e.g. ``{"SPT25_SC38_002": 3}``
+        """
+        max_seq: dict[str, int] = {}
+
+        if not self.output_dir.exists():
+            return max_seq
+
+        pattern = re.compile(
+            rf"^(.+?)_(\d+)_{re.escape(self.suffix)}\.",
+            re.IGNORECASE,
+        )
+
+        for file_path in self.output_dir.iterdir():
+            if not file_path.is_file():
+                continue
+            match = pattern.match(file_path.name)
+            if match:
+                prefix = match.group(1)
+                seq = int(match.group(2))
+                if seq > max_seq.get(prefix, 0):
+                    max_seq[prefix] = seq
+
+        return max_seq
+
+    # ------------------------------------------------------------------
+    # Planning (pure logic, no I/O except scan)
+    # ------------------------------------------------------------------
+
+    def plan_renames(
+        self,
+        pairing_result: PairingResult,
+        triage_map: dict[str, str] | None = None,
+    ) -> list[dict]:
         """Build a rename plan from a :class:`PairingResult`.
 
         Only videos are copied — images are used solely to derive the base
@@ -70,11 +118,23 @@ class MediaFileRenamer:
 
             [{"source": str, "destination": str, "type": "video"}, ...]
 
-        Videos matched to the same image are sorted by distance (best first),
-        with source filename as a tiebreaker for deterministic ordering.
+        Videos matched to the same image are sorted by triage tier
+        (YES first, then unknown, then MAYBE), then by match distance
+        (best first), with source filename as a tiebreaker.
+
+        Args:
+            pairing_result: The result from the pairing engine.
+            triage_map: Optional mapping of video path to triage status
+                (``"yes"``, ``"maybe"``, or ``"unknown"``).
         """
         if not pairing_result.pairs:
             return []
+
+        TRIAGE_PRIORITY = {"yes": 0, "unknown": 1, "maybe": 2}
+        triage_map = triage_map or {}
+
+        # Scan output folder for existing sequences
+        existing_seqs = self.scan_existing_sequences()
 
         # Group pairs by image path
         image_to_pairs: dict[str, list[dict]] = defaultdict(list)
@@ -86,6 +146,11 @@ class MediaFileRenamer:
 
         for image_path, pairs in image_to_pairs.items():
             stem = Path(image_path).stem
+
+            # Strip image suffix (e.g. "_S")
+            if self.strip_image_suffix and stem.endswith(self.strip_image_suffix):
+                stem = stem[: -len(self.strip_image_suffix)]
+
             stem_lower = stem.lower()
 
             # Handle same-name images from different directories
@@ -96,15 +161,27 @@ class MediaFileRenamer:
                 seen_stems[stem_lower] = 1
                 dest_stem = stem
 
-            # Sort videos: best match first, filename tiebreaker
+            # Sort: triage tier first, then distance, then filename
             sorted_pairs = sorted(
-                pairs, key=lambda p: (p["distance"], Path(p["video"]).name)
+                pairs,
+                key=lambda p: (
+                    TRIAGE_PRIORITY.get(
+                        triage_map.get(p["video"], "unknown"), 1
+                    ),
+                    p["distance"],
+                    Path(p["video"]).name,
+                ),
             )
 
-            # Plan: copy each video with suffix then sequential number
-            for idx, pair in enumerate(sorted_pairs, start=1):
+            # Start numbering after existing files
+            start_idx = existing_seqs.get(dest_stem, 0) + 1
+
+            for idx, pair in enumerate(sorted_pairs, start=start_idx):
                 video_ext = Path(pair["video"]).suffix
-                dest_name = f"{dest_stem}_{self.suffix}_{idx:03d}{video_ext}"
+                dest_name = (
+                    f"{dest_stem}_{idx:0{self.seq_padding}d}"
+                    f"_{self.suffix}{video_ext}"
+                )
                 dest_video = self.output_dir / dest_name
                 planned.append({
                     "source": pair["video"],
@@ -118,7 +195,11 @@ class MediaFileRenamer:
     # Execution
     # ------------------------------------------------------------------
 
-    def execute(self, pairing_result: PairingResult) -> RenameResult:
+    def execute(
+        self,
+        pairing_result: PairingResult,
+        triage_map: dict[str, str] | None = None,
+    ) -> RenameResult:
         """Plan and execute the rename/copy operation.
 
         Returns a :class:`RenameResult` with copied, skipped, and errored files.
@@ -126,7 +207,7 @@ class MediaFileRenamer:
         start_time = time.time()
         result = RenameResult()
 
-        plan = self.plan_renames(pairing_result)
+        plan = self.plan_renames(pairing_result, triage_map=triage_map)
         if not plan:
             logger.info("Nothing to copy — no matched pairs.")
             result.stats = self._make_stats(result, start_time)
@@ -196,3 +277,26 @@ class MediaFileRenamer:
             "total_errors": len(result.errors),
             "time_elapsed": round(time.time() - start_time, 3),
         }
+
+
+# ------------------------------------------------------------------
+# Triage utilities
+# ------------------------------------------------------------------
+
+
+def build_triage_map(video_paths: list[str]) -> dict[str, str]:
+    """Infer triage status from folder path.
+
+    Looks for ``/YES/`` or ``/MAYBE/`` segments in each video path
+    (case-insensitive). Everything else is classified as ``"unknown"``.
+    """
+    triage: dict[str, str] = {}
+    for vp in video_paths:
+        lower = vp.lower().replace("\\", "/")
+        if "/yes/" in lower:
+            triage[vp] = "yes"
+        elif "/maybe/" in lower:
+            triage[vp] = "maybe"
+        else:
+            triage[vp] = "unknown"
+    return triage

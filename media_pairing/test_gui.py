@@ -16,7 +16,7 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Optional
 
-from media_pairing.file_renamer import MediaFileRenamer, RenameResult
+from media_pairing.file_renamer import MediaFileRenamer, RenameResult, build_triage_map
 from media_pairing.file_scanner import scan_directory
 from media_pairing.pairing_engine import (
     IMAGE_EXTENSIONS,
@@ -208,6 +208,14 @@ class MediaPairingGUI:
             action_frame, textvariable=self.suffix_var, width=10
         )
         self.suffix_entry.pack(side="left", padx=(4, 4))
+
+        ttk.Label(action_frame, text="Strip from image name:").pack(
+            side="left", padx=(8, 0)
+        )
+        self.strip_suffix_var = tk.StringVar(value="_S")
+        ttk.Entry(
+            action_frame, textvariable=self.strip_suffix_var, width=8
+        ).pack(side="left", padx=(4, 4))
 
         self.rename_btn = ttk.Button(
             action_frame,
@@ -587,11 +595,49 @@ class MediaPairingGUI:
         self.rename_btn.configure(state="disabled", text="Copying...")
 
         result = self._last_result
+        strip_suffix = self.strip_suffix_var.get().strip() or None
 
         def _worker() -> None:
             try:
-                renamer = MediaFileRenamer(output_dir=output_dir, suffix=suffix)
-                rename_result = renamer.execute(result)
+                renamer = MediaFileRenamer(
+                    output_dir=output_dir,
+                    suffix=suffix,
+                    strip_image_suffix=strip_suffix,
+                )
+
+                # Auto-detect triage from video folder paths
+                triage_map = build_triage_map(
+                    [p["video"] for p in result.pairs]
+                )
+                yes_count = sum(1 for v in triage_map.values() if v == "yes")
+                maybe_count = sum(
+                    1 for v in triage_map.values() if v == "maybe"
+                )
+                unknown_count = sum(
+                    1 for v in triage_map.values() if v == "unknown"
+                )
+                logger.info(
+                    "Triage detected: %d YES, %d MAYBE, %d unknown",
+                    yes_count,
+                    maybe_count,
+                    unknown_count,
+                )
+
+                # Log existing file offsets
+                existing = renamer.scan_existing_sequences()
+                if existing:
+                    for stem, max_seq in sorted(existing.items()):
+                        logger.info(
+                            "Output folder has existing files: "
+                            "%s → %d existing, starting from %03d",
+                            stem,
+                            max_seq,
+                            max_seq + 1,
+                        )
+                else:
+                    logger.info("Output folder: no existing sequences found")
+
+                rename_result = renamer.execute(result, triage_map=triage_map)
                 self.root.after(0, self._display_rename_result, rename_result)
             except Exception as exc:
                 logger.exception("Rename/copy failed")
