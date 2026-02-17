@@ -16,6 +16,7 @@ from pathlib import Path
 from tkinter import filedialog, ttk
 from typing import Optional
 
+from media_pairing.excel_export import export_rename_to_excel
 from media_pairing.file_renamer import MediaFileRenamer, RenameResult, build_triage_map
 from media_pairing.file_scanner import scan_directory
 from media_pairing.pairing_engine import (
@@ -89,6 +90,7 @@ class MediaPairingGUI:
         self.video_paths: list[str] = []
         self._matching = False
         self._last_result: Optional[PairingResult] = None
+        self._last_rename_result: Optional[RenameResult] = None
 
         self._build_ui()
         self._setup_logging()
@@ -230,6 +232,10 @@ class MediaPairingGUI:
         ttk.Button(
             action_frame, text="Export Results (JSON)", command=self._export_results
         ).pack(side="right")
+
+        ttk.Button(
+            action_frame, text="Export to Excel", command=self._export_to_excel
+        ).pack(side="right", padx=(0, 8))
 
         ttk.Button(action_frame, text="Copy Log", command=self._copy_log).pack(
             side="right", padx=8
@@ -568,6 +574,27 @@ class MediaPairingGUI:
             json.dump(data, f, indent=2)
         logger.info("Results exported to %s", path)
 
+    def _export_to_excel(self) -> None:
+        """Export rename results to an Excel workbook."""
+        if self._last_rename_result is None:
+            logger.info("No rename results to export — run Rename & Copy first.")
+            return
+        if not self._last_rename_result.copied_files:
+            logger.info("No copied files to export.")
+            return
+        path = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            title="Export Clip Report to Excel",
+        )
+        if not path:
+            return
+        try:
+            export_rename_to_excel(self._last_rename_result, path)
+            logger.info("Excel report exported to %s", path)
+        except Exception:
+            logger.exception("Failed to export Excel report")
+
     # ------------------------------------------------------------------
     # Rename & Copy
     # ------------------------------------------------------------------
@@ -655,6 +682,7 @@ class MediaPairingGUI:
         self.rename_btn.configure(state="normal", text="Rename & Copy")
 
     def _display_rename_result(self, rename_result: RenameResult) -> None:
+        self._last_rename_result = rename_result
         self._write_result("\n--- Rename & Copy Results ---\n", "stats")
 
         for entry in rename_result.copied_files:
