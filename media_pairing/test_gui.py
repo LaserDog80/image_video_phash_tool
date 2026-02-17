@@ -202,8 +202,10 @@ class MediaPairingGUI:
             side="left", padx=8
         )
 
-        ttk.Label(action_frame, text="Suffix:").pack(side="left", padx=(16, 0))
-        self.suffix_var = tk.StringVar(value="")
+        ttk.Label(action_frame, text="Output suffix (e.g. V):").pack(
+            side="left", padx=(16, 0)
+        )
+        self.suffix_var = tk.StringVar(value="V")
         self.suffix_entry = ttk.Entry(
             action_frame, textvariable=self.suffix_var, width=10
         )
@@ -574,7 +576,7 @@ class MediaPairingGUI:
         if self._last_result is None or not self._last_result.pairs:
             return
 
-        suffix = self.suffix_var.get().strip()
+        suffix = self.suffix_var.get().strip().lstrip("_")
         if not suffix:
             self._write_result(
                 "  ERROR  A suffix is required before copying "
