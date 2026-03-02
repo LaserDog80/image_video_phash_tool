@@ -37,13 +37,17 @@ def _result_with_pairs(pairs: list[dict]) -> PairingResult:
 
 
 class TestInit:
-    def test_empty_suffix_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="suffix is required"):
-            MediaFileRenamer(output_dir=tmp_path, suffix="")
+    def test_default_suffix_is_none(self, tmp_path: Path) -> None:
+        renamer = MediaFileRenamer(output_dir=tmp_path)
+        assert renamer.suffix is None
 
-    def test_whitespace_suffix_raises(self, tmp_path: Path) -> None:
-        with pytest.raises(ValueError, match="suffix is required"):
-            MediaFileRenamer(output_dir=tmp_path, suffix="   ")
+    def test_empty_suffix_becomes_none(self, tmp_path: Path) -> None:
+        renamer = MediaFileRenamer(output_dir=tmp_path, suffix="")
+        assert renamer.suffix is None
+
+    def test_whitespace_suffix_becomes_none(self, tmp_path: Path) -> None:
+        renamer = MediaFileRenamer(output_dir=tmp_path, suffix="   ")
+        assert renamer.suffix is None
 
     def test_valid_suffix_accepted(self, tmp_path: Path) -> None:
         renamer = MediaFileRenamer(output_dir=tmp_path, suffix="V")
@@ -243,6 +247,89 @@ class TestPlanRenames:
         )
 
         assert Path(plan[0]["destination"]).name == "my.photo.beach_001_V.mp4"
+
+
+# ------------------------------------------------------------------
+# Simple mode (no suffix) tests
+# ------------------------------------------------------------------
+
+
+class TestSimpleMode:
+    def test_single_pair_no_suffix(self, tmp_path: Path) -> None:
+        img = _touch(tmp_path / "src" / "beach.jpg")
+        vid = _touch(tmp_path / "src" / "clip.mp4")
+        out = tmp_path / "out"
+
+        renamer = MediaFileRenamer(output_dir=out)
+        plan = renamer.plan_renames(_result_with_pairs([
+            {"image": img, "video": vid, "distance": 2, "algorithm": "phash"},
+        ]))
+
+        assert len(plan) == 1
+        assert Path(plan[0]["destination"]).name == "beach_001.mp4"
+
+    def test_multiple_videos_no_suffix(self, tmp_path: Path) -> None:
+        img = _touch(tmp_path / "src" / "sunset.png")
+        v1 = _touch(tmp_path / "src" / "a.mp4")
+        v2 = _touch(tmp_path / "src" / "b.mp4")
+        v3 = _touch(tmp_path / "src" / "c.mp4")
+        out = tmp_path / "out"
+
+        pairs = [
+            {"image": img, "video": v1, "distance": 1, "algorithm": "phash"},
+            {"image": img, "video": v2, "distance": 3, "algorithm": "phash"},
+            {"image": img, "video": v3, "distance": 2, "algorithm": "phash"},
+        ]
+        plan = MediaFileRenamer(output_dir=out).plan_renames(
+            _result_with_pairs(pairs)
+        )
+
+        names = [Path(e["destination"]).name for e in plan]
+        assert names == ["sunset_001.mp4", "sunset_002.mp4", "sunset_003.mp4"]
+
+    def test_scan_continuation_no_suffix(self, tmp_path: Path) -> None:
+        out = tmp_path / "out"
+        _touch(out / "photo_001.mp4")
+        _touch(out / "photo_002.mp4")
+
+        img = _touch(tmp_path / "src" / "photo.jpg")
+        vid = _touch(tmp_path / "src" / "new.mp4")
+
+        plan = MediaFileRenamer(output_dir=out).plan_renames(
+            _result_with_pairs([
+                {"image": img, "video": vid, "distance": 1, "algorithm": "phash"},
+            ])
+        )
+
+        assert Path(plan[0]["destination"]).name == "photo_003.mp4"
+
+    def test_suffix_mode_still_works(self, tmp_path: Path) -> None:
+        img = _touch(tmp_path / "src" / "beach.jpg")
+        vid = _touch(tmp_path / "src" / "clip.mp4")
+        out = tmp_path / "out"
+
+        plan = MediaFileRenamer(output_dir=out, suffix="V").plan_renames(
+            _result_with_pairs([
+                {"image": img, "video": vid, "distance": 2, "algorithm": "phash"},
+            ])
+        )
+
+        assert Path(plan[0]["destination"]).name == "beach_001_V.mp4"
+
+    def test_execute_no_suffix(self, tmp_path: Path) -> None:
+        img = _touch(tmp_path / "src" / "photo.jpg", b"image data")
+        vid = _touch(tmp_path / "src" / "clip.mp4", b"video data")
+        out = tmp_path / "out"
+
+        result = MediaFileRenamer(output_dir=out).execute(
+            _result_with_pairs([
+                {"image": img, "video": vid, "distance": 2, "algorithm": "phash"},
+            ])
+        )
+
+        assert len(result.copied_files) == 1
+        assert (out / "photo_001.mp4").exists()
+        assert (out / "photo_001.mp4").read_bytes() == b"video data"
 
 
 # ------------------------------------------------------------------

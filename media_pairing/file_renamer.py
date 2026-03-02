@@ -1,9 +1,12 @@
 """Copy matched videos to an output folder with structured names.
 
 Given a :class:`PairingResult` from the pairing engine, this module copies
-each matched video renamed to ``{image_stem}_{NNN}_{suffix}{video_ext}`` —
-where *suffix* is a user-provided label and *NNN* is a zero-padded sequence
-number.  Within each image group, videos are ordered by triage tier
+each matched video with a structured name.  By default the format is
+``{image_stem}_{NNN}{video_ext}`` (simple mode).  When an optional *suffix*
+label is provided, the format becomes
+``{image_stem}_{NNN}_{suffix}{video_ext}``.
+
+Within each image group, videos are ordered by triage tier
 (YES → unknown → MAYBE), then by match distance (best first).
 """
 
@@ -37,32 +40,29 @@ class MediaFileRenamer:
 
     Args:
         output_dir: Target directory for copied files.
-        suffix: Required label appended after the sequence number
-            (e.g. ``"V"`` produces ``image_001_V.mp4``).
+        suffix: Optional label appended after the sequence number.
+            When ``None`` (default), produces simple names like
+            ``image_001.mp4``.  When set (e.g. ``"V"``), produces
+            ``image_001_V.mp4``.
         overwrite: If ``True``, overwrite existing files in the output dir.
         dry_run: If ``True``, compute the rename plan but don't copy anything.
         strip_image_suffix: If provided, strip this string from the end of
             the image stem before building the output name (e.g. ``"_S"``
             turns ``SPT25_SC38_002_S`` into ``SPT25_SC38_002``).
         seq_padding: Zero-pad width for the sequence number (default 3).
-
-    Raises:
-        ValueError: If *suffix* is empty or whitespace-only.
     """
 
     def __init__(
         self,
         output_dir: str | Path,
-        suffix: str,
+        suffix: str | None = None,
         overwrite: bool = False,
         dry_run: bool = False,
         strip_image_suffix: str | None = None,
         seq_padding: int = 3,
     ) -> None:
-        if not suffix or not suffix.strip():
-            raise ValueError("A suffix is required (e.g. 'V', 'GRADE', 'EDIT').")
         self.output_dir = Path(output_dir)
-        self.suffix = suffix.strip()
+        self.suffix = suffix.strip() if suffix and suffix.strip() else None
         self.overwrite = overwrite
         self.dry_run = dry_run
         self.strip_image_suffix = strip_image_suffix
@@ -85,10 +85,16 @@ class MediaFileRenamer:
         if not self.output_dir.exists():
             return max_seq
 
-        pattern = re.compile(
-            rf"^(.+?)_(\d+)_{re.escape(self.suffix)}\.",
-            re.IGNORECASE,
-        )
+        if self.suffix:
+            pattern = re.compile(
+                rf"^(.+?)_(\d+)_{re.escape(self.suffix)}\.",
+                re.IGNORECASE,
+            )
+        else:
+            pattern = re.compile(
+                r"^(.+?)_(\d+)\.",
+                re.IGNORECASE,
+            )
 
         for file_path in self.output_dir.iterdir():
             if not file_path.is_file():
@@ -178,10 +184,11 @@ class MediaFileRenamer:
 
             for idx, pair in enumerate(sorted_pairs, start=start_idx):
                 video_ext = Path(pair["video"]).suffix
-                dest_name = (
-                    f"{dest_stem}_{idx:0{self.seq_padding}d}"
-                    f"_{self.suffix}{video_ext}"
-                )
+                seq = f"{idx:0{self.seq_padding}d}"
+                if self.suffix:
+                    dest_name = f"{dest_stem}_{seq}_{self.suffix}{video_ext}"
+                else:
+                    dest_name = f"{dest_stem}_{seq}{video_ext}"
                 dest_video = self.output_dir / dest_name
                 planned.append({
                     "source": pair["video"],
