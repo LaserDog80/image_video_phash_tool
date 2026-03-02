@@ -16,14 +16,14 @@ You have:
 - `beach_sunset.jpg` (your source image)
 - `IMG_8821.mp4`, `IMG_8822.mp4`, `IMG_8823.mp4` (three AI-generated clips of that image)
 
-After matching and renaming with suffix `V`, you get:
+After matching and renaming you get:
 ```
-beach_sunset_V_001.mp4
-beach_sunset_V_002.mp4
-beach_sunset_V_003.mp4
+beach_sunset_001.mp4
+beach_sunset_002.mp4
+beach_sunset_003.mp4
 ```
 
-The suffix is up to you — use `V` for video, `GRADE` for colour-graded versions, `EDIT` for edited cuts, or whatever makes sense for your workflow.
+You can optionally add a suffix label (e.g. `V`) to get `beach_sunset_001_V.mp4` instead — useful for distinguishing video versions, colour grades, edits, etc.
 
 ## How It Works
 
@@ -42,19 +42,72 @@ The matching pipeline has four stages:
 
    For large image sets (100+), the engine uses **band-based bucketing** (a form of locality-sensitive hashing) to avoid brute-force comparison. Each 64-bit hash is split into four 16-bit bands, and only images sharing at least one band with the video frame are considered as candidates. This dramatically reduces the number of comparisons needed.
 
-4. **Rename and copy** — Matched videos are copied to an output folder with structured names: `{image_stem}_{NNN}_{suffix}{ext}`. Videos matched to the same image are sorted by triage tier (YES > unknown > MAYBE, inferred from folder paths) and then by match distance (best first). Sequence numbers continue from where existing files in the output folder left off, so you can run the tool incrementally without overwriting previous results.
+4. **Rename and copy** — Matched videos are copied to an output folder with structured names: `{image_stem}_{NNN}{ext}` by default, or `{image_stem}_{NNN}_{suffix}{ext}` when an optional suffix is provided. Videos matched to the same image are sorted by triage tier (YES > unknown > MAYBE, inferred from folder paths) and then by match distance (best first). Sequence numbers continue from where existing files in the output folder left off, so you can run the tool incrementally without overwriting previous results.
 
-## How to Use the GUI
+## Setup
 
-### Getting Started
+### Prerequisites
+
+- **Python 3.12+** — download from [python.org](https://www.python.org/downloads/) or install via your package manager
+- **uv** (recommended) — fast Python package manager. Install from [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/)
+
+### macOS / Linux
 
 ```bash
-# Install dependencies (one time)
+# Clone the repository
+git clone https://github.com/LaserDog80/image_video_phash_tool.git
+cd image_video_phash_tool
+
+# Create a virtual environment and install dependencies
+uv venv
 uv pip install -r requirements.txt
 
 # Launch the application
 .venv/bin/python -m media_pairing.test_gui
 ```
+
+> **Linux note:** tkinter may not be bundled with your Python install. If you get a `ModuleNotFoundError: No module named 'tkinter'`, install it with your package manager:
+> ```bash
+> # Debian / Ubuntu
+> sudo apt install python3-tk
+>
+> # Fedora
+> sudo dnf install python3-tkinter
+>
+> # Arch
+> sudo pacman -S tk
+> ```
+
+### Windows
+
+```powershell
+# Clone the repository
+git clone https://github.com/LaserDog80/image_video_phash_tool.git
+cd image_video_phash_tool
+
+# Create a virtual environment and install dependencies
+uv venv
+uv pip install -r requirements.txt
+
+# Launch the application
+.venv\Scripts\python -m media_pairing.test_gui
+```
+
+> **Without uv:** You can use plain pip instead:
+> ```bash
+> python -m venv .venv
+>
+> # macOS / Linux
+> source .venv/bin/activate
+>
+> # Windows
+> .venv\Scripts\activate
+>
+> pip install -r requirements.txt
+> python -m media_pairing.test_gui
+> ```
+
+## How to Use the GUI
 
 ### Step by Step
 
@@ -62,9 +115,7 @@ uv pip install -r requirements.txt
 
 2. **Run Matching** — click the button and the tool will analyse each file and figure out which videos belong to which images. Results appear colour-coded: green for matches, amber for unmatched files, red for errors.
 
-3. **Set your suffix** — type a label into the Suffix field (e.g. `V`). This becomes part of the renamed filename. You must provide a suffix before copying.
-
-4. **Rename & Copy** — click the button, choose an output folder, and the matched videos are copied there with their new names. Your original files are never touched.
+3. **Rename & Copy** — click the button, choose an output folder, and the matched videos are copied there with their new names. Your original files are never touched. By default, videos are named `{image}_{001}.mp4`. If you want an extra label, type it into the optional Suffix field (e.g. `V`) to get `{image}_{001}_V.mp4`.
 
 ### Settings
 
@@ -122,6 +173,11 @@ print(f"Unmatched videos: {result.unmatched_videos}")
 ```python
 from media_pairing import MediaFileRenamer
 
+# Simple mode: beach_sunset_001.mp4
+renamer = MediaFileRenamer(output_dir="/path/to/output")
+rename_result = renamer.execute(result)
+
+# With suffix: beach_sunset_001_V.mp4
 renamer = MediaFileRenamer(output_dir="/path/to/output", suffix="V")
 rename_result = renamer.execute(result)
 
@@ -185,6 +241,16 @@ project/
 - Python 3.12+
 - OpenCV, Pillow, ImageHash, NumPy, openpyxl (installed via `requirements.txt`)
 - tkinterdnd2 (optional — enables drag-and-drop in the GUI; falls back to file dialogs without it)
+
+## Running Tests
+
+```bash
+# macOS / Linux
+.venv/bin/python -m pytest tests/ -v
+
+# Windows
+.venv\Scripts\python -m pytest tests/ -v
+```
 
 ## Development
 
