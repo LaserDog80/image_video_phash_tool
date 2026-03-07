@@ -15,6 +15,7 @@ from media_pairing.pairing_engine import (
     VIDEO_EXTENSIONS,
     MediaPairingEngine,
     PairingResult,
+    VideoFingerprint,
 )
 
 
@@ -358,3 +359,279 @@ class TestConstants:
         assert len(VIDEO_EXTENSIONS) > 0
         assert ".mp4" in VIDEO_EXTENSIONS
         assert ".mkv" in VIDEO_EXTENSIONS
+
+
+# ------------------------------------------------------------------
+# Helper: multi-segment video
+# ------------------------------------------------------------------
+
+
+def _make_gradient_video(
+    path: Path,
+    segment_colours: list[tuple[int, int, int]],
+    frames_per_segment: int = 5,
+    size: tuple[int, int] = (64, 64),
+) -> str:
+    """Create a video with distinct colour segments.
+
+    Each segment is a block of solid-colour frames.  Useful for testing
+    distributed frame extraction (first/middle/last are different).
+    """
+    fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+    writer = cv2.VideoWriter(str(path), fourcc, 24.0, size)
+    for colour_rgb in segment_colours:
+        bgr = (colour_rgb[2], colour_rgb[1], colour_rgb[0])
+        frame = np.full((*size[::-1], 3), bgr, dtype=np.uint8)
+        for _ in range(frames_per_segment):
+            writer.write(frame)
+    writer.release()
+    return str(path)
+
+
+# ------------------------------------------------------------------
+# extract_frames_distributed tests
+# ------------------------------------------------------------------
+
+
+class TestExtractFramesDistributed:
+    def test_returns_requested_frame_count(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=4)
+        vid = _make_video(tmp_dir / "clip.avi", frame_count=20)
+        frames, positions = eng.extract_frames_distributed(vid)
+        assert len(frames) == 4
+        assert len(positions) == 4
+
+    def test_positions_span_full_range(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=5)
+        vid = _make_video(tmp_dir / "clip.avi", frame_count=30)
+        _, positions = eng.extract_frames_distributed(vid)
+        assert positions[0] == 0.0
+        assert positions[-1] == 1.0
+
+    def test_respects_num_frames_argument(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=8)
+        vid = _make_video(tmp_dir / "clip.avi", frame_count=20)
+        frames, _ = eng.extract_frames_distributed(vid, num_frames=3)
+        assert len(frames) == 3
+
+    def test_short_video_caps_at_total_frames(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=10)
+        vid = _make_video(tmp_dir / "clip.avi", frame_count=3)
+        frames, positions = eng.extract_frames_distributed(vid)
+        assert len(frames) <= 3
+
+    def test_dark_frames_skipped(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=3, skip_black_frames=True)
+        # Video: 5 black, 5 bright, 5 black — middle segment extractable
+        vid = _make_gradient_video(
+            tmp_dir / "dark.avi",
+            segment_colours=[(0, 0, 0), (200, 200, 200), (0, 0, 0)],
+            frames_per_segment=5,
+        )
+        frames, _ = eng.extract_frames_distributed(vid)
+        # At least the middle frame should be bright enough
+        assert len(frames) >= 1
+
+    def test_missing_video_raises(self) -> None:
+        eng = MediaPairingEngine()
+        with pytest.raises(FileNotFoundError):
+            eng.extract_frames_distributed("/no/such/file.mp4")
+
+    def test_gradient_video_frames_differ(self, tmp_dir: Path) -> None:
+        """Frames from different segments should produce different hashes."""
+        eng = MediaPairingEngine(video_match_frames=3)
+        vid = _make_gradient_video(
+            tmp_dir / "gradient.avi",
+            segment_colours=[(255, 0, 0), (0, 255, 0), (0, 0, 255)],
+            frames_per_segment=10,
+        )
+        frames, _ = eng.extract_frames_distributed(vid)
+        assert len(frames) == 3
+        h0 = eng.hash_image(frames[0])
+        h2 = eng.hash_image(frames[2])
+        # Red and blue segments should hash differently
+        assert h0 is not None and h2 is not None
+
+
+# ------------------------------------------------------------------
+# VideoFingerprint dataclass
+# ------------------------------------------------------------------
+
+
+class TestVideoFingerprint:
+    def test_creation(self) -> None:
+        import imagehash
+
+        dummy_hash = imagehash.hex_to_hash("0" * 16)
+        fp = VideoFingerprint(
+            path="/test/video.mp4",
+            hashes=[dummy_hash, dummy_hash],
+            positions=[0.0, 1.0],
+        )
+        assert fp.path == "/test/video.mp4"
+        assert len(fp.hashes) == 2
+        assert fp.positions == [0.0, 1.0]
+
+
+# ------------------------------------------------------------------
+# build_video_index tests
+# ------------------------------------------------------------------
+
+
+class TestBuildVideoIndex:
+    def test_builds_fingerprints(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=3)
+        v1 = _make_video(tmp_dir / "a.avi", frame_count=15, colour=(100, 50, 50))
+        v2 = _make_video(tmp_dir / "b.avi", frame_count=15, colour=(50, 100, 50))
+        fps, errors = eng.build_video_index([v1, v2])
+        assert len(fps) == 2
+        assert errors == []
+        assert v1 in fps
+        assert len(fps[v1].hashes) == 3
+
+    def test_corrupt_video_produces_error(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=3)
+        bad = tmp_dir / "bad.avi"
+        bad.write_text("not a video")
+        fps, errors = eng.build_video_index([str(bad)])
+        assert len(fps) == 0
+        assert len(errors) >= 1
+
+
+# ------------------------------------------------------------------
+# _compare_fingerprints tests
+# ------------------------------------------------------------------
+
+
+class TestCompareFingerprints:
+    def test_identical_fingerprints_zero_distance(self) -> None:
+        import imagehash
+
+        h = imagehash.hex_to_hash("a" * 16)
+        fp = VideoFingerprint(
+            path="/test.mp4", hashes=[h, h, h], positions=[0.0, 0.5, 1.0]
+        )
+        dist = MediaPairingEngine._compare_fingerprints(fp, fp)
+        assert dist == 0.0
+
+    def test_different_fingerprints_nonzero(self) -> None:
+        import imagehash
+
+        h1 = imagehash.hex_to_hash("0" * 16)
+        h2 = imagehash.hex_to_hash("f" * 16)
+        fp_a = VideoFingerprint(
+            path="/a.mp4", hashes=[h1], positions=[0.0]
+        )
+        fp_b = VideoFingerprint(
+            path="/b.mp4", hashes=[h2], positions=[0.0]
+        )
+        dist = MediaPairingEngine._compare_fingerprints(fp_a, fp_b)
+        assert dist > 0
+
+    def test_empty_fingerprint_returns_inf(self) -> None:
+        fp_empty = VideoFingerprint(path="/e.mp4", hashes=[], positions=[])
+        fp_non = VideoFingerprint(
+            path="/n.mp4",
+            hashes=[__import__("imagehash").hex_to_hash("a" * 16)],
+            positions=[0.0],
+        )
+        assert MediaPairingEngine._compare_fingerprints(fp_empty, fp_non) == float("inf")
+
+    def test_different_lengths_nearest_position(self) -> None:
+        import imagehash
+
+        h = imagehash.hex_to_hash("a" * 16)
+        fp_short = VideoFingerprint(
+            path="/s.mp4", hashes=[h], positions=[0.5]
+        )
+        fp_long = VideoFingerprint(
+            path="/l.mp4", hashes=[h, h, h], positions=[0.0, 0.5, 1.0]
+        )
+        # Same hash everywhere, distance should be 0
+        dist = MediaPairingEngine._compare_fingerprints(fp_short, fp_long)
+        assert dist == 0.0
+
+
+# ------------------------------------------------------------------
+# find_video_pairs tests
+# ------------------------------------------------------------------
+
+
+class TestFindVideoPairs:
+    def test_matching_identical_videos(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=3, hash_tolerance=4)
+        colour = (128, 64, 200)
+        v1 = _make_video(tmp_dir / "source.avi", frame_count=15, colour=colour)
+        v2 = _make_video(tmp_dir / "target.avi", frame_count=15, colour=colour)
+        result = eng.find_video_pairs([v1], [v2])
+        assert isinstance(result, PairingResult)
+        assert len(result.pairs) == 1
+        pair = result.pairs[0]
+        assert pair["image"] == v1  # backward compat key
+        assert pair["video"] == v2  # backward compat key
+        assert pair["source"] == v1
+        assert pair["target"] == v2
+        assert pair["match_type"] == "video_to_video"
+        assert pair["distance"] <= eng.hash_tolerance
+
+    def test_no_match_different_videos(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=3, hash_tolerance=0)
+        v1 = _make_gradient_video(
+            tmp_dir / "source.avi",
+            [(255, 0, 0), (0, 255, 0), (0, 0, 255)],
+            frames_per_segment=10,
+        )
+        v2 = _make_gradient_video(
+            tmp_dir / "target.avi",
+            [(0, 255, 255), (255, 0, 255), (255, 255, 0)],
+            frames_per_segment=10,
+        )
+        result = eng.find_video_pairs([v1], [v2])
+        # With tolerance 0, different colour videos should not match
+        assert isinstance(result, PairingResult)
+
+    def test_empty_source_list(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=3)
+        v = _make_video(tmp_dir / "target.avi", frame_count=10)
+        result = eng.find_video_pairs([], [v])
+        assert result.pairs == []
+        assert result.unmatched_videos == [v]
+
+    def test_empty_target_list(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=3)
+        v = _make_video(tmp_dir / "source.avi", frame_count=10)
+        result = eng.find_video_pairs([v], [])
+        assert result.pairs == []
+        assert result.unmatched_images == [v]
+
+    def test_both_lists_empty(self) -> None:
+        eng = MediaPairingEngine(video_match_frames=3)
+        result = eng.find_video_pairs([], [])
+        assert result.pairs == []
+
+    def test_corrupt_video_produces_error(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=3)
+        good = _make_video(tmp_dir / "source.avi", frame_count=10)
+        bad = tmp_dir / "bad.avi"
+        bad.write_text("not a video")
+        result = eng.find_video_pairs([good], [str(bad)])
+        assert len(result.errors) >= 1
+
+    def test_stats_populated(self, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(video_match_frames=3)
+        v1 = _make_video(tmp_dir / "s.avi", frame_count=10, colour=(128, 64, 200))
+        v2 = _make_video(tmp_dir / "t.avi", frame_count=10, colour=(128, 64, 200))
+        result = eng.find_video_pairs([v1], [v2])
+        assert "total_comparisons" in result.stats
+        assert "time_elapsed" in result.stats
+        assert result.stats["match_type"] == "video_to_video"
+
+    @pytest.mark.parametrize("algo", ["phash", "dhash", "ahash"])
+    def test_all_algorithms(self, algo: str, tmp_dir: Path) -> None:
+        eng = MediaPairingEngine(hash_algo=algo, video_match_frames=3)
+        colour = (128, 64, 200)
+        v1 = _make_video(tmp_dir / f"s_{algo}.avi", frame_count=10, colour=colour)
+        v2 = _make_video(tmp_dir / f"t_{algo}.avi", frame_count=10, colour=colour)
+        result = eng.find_video_pairs([v1], [v2])
+        assert isinstance(result, PairingResult)
+        assert result.stats["algorithm"] == algo
