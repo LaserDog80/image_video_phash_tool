@@ -506,11 +506,13 @@ class MediaPairingEngine:
             )
             return result
 
-        # Build fingerprints for both sets
-        source_fps, src_errors = self.build_video_index(source_videos)
-        target_fps, tgt_errors = self.build_video_index(target_videos)
-        result.errors.extend(src_errors)
-        result.errors.extend(tgt_errors)
+        # Build fingerprints — reuse results for paths in both sets
+        all_paths = list(dict.fromkeys(source_videos + target_videos))
+        all_fps, all_errors = self.build_video_index(all_paths)
+        result.errors.extend(all_errors)
+
+        source_fps = {p: all_fps[p] for p in source_videos if p in all_fps}
+        target_fps = {p: all_fps[p] for p in target_videos if p in all_fps}
 
         matched_sources: set[str] = set()
         matched_targets: set[str] = set()
@@ -520,6 +522,8 @@ class MediaPairingEngine:
             best_distance = float("inf")
 
             for src_path, src_fp in source_fps.items():
+                if src_path == tgt_path:
+                    continue  # skip self-comparison
                 avg_dist = self._compare_fingerprints(src_fp, tgt_fp)
                 total_comparisons += 1
 

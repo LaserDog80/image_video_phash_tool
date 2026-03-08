@@ -111,23 +111,42 @@ uv pip install -r requirements.txt
 
 ### Step by Step
 
-1. **Add your files** — click "+ Add Files" on the image (left) or video (right) panel to select individual files, or use "Load Folder" to scan an entire directory (with optional recursion). Drag and drop is supported if tkinterdnd2 is installed.
+The tool has two matching modes, shown as tabs at the top of the window:
 
-2. **Run Matching** — click the button and the tool will analyse each file and figure out which videos belong to which images. Results appear colour-coded: green for matches, amber for unmatched files, red for errors.
+#### Image → Video (default tab)
 
-3. **Rename & Copy** — click the button, choose an output folder, and the matched videos are copied there with their new names. Your original files are never touched. By default, videos are named `{image}_{001}.mp4`. If you want an extra label, type it into the optional Suffix field (e.g. `V`) to get `{image}_{001}_V.mp4`.
+Use this when you have a folder of source images and a separate folder of video clips to match against them.
+
+1. **Load Image Folder** — select the folder containing your source images (left panel).
+2. **Load Video Folder** — select the folder containing your video clips (right panel).
+3. You can also use **+ Add Files** to pick individual files, or drag and drop if supported.
+4. **Run Matching** — the tool analyses each file and figures out which videos belong to which images. Results appear colour-coded: green for matches, amber for unmatched files, red for errors.
+
+#### Video → Video
+
+Use this when you want to match two sets of video files against each other — for example, matching low-res proxy clips to their high-res originals, or finding duplicates across two folders.
+
+1. **Load Source Folder** — select the folder containing your reference videos (left panel). These provide the filenames for renaming.
+2. **Load Target Folder** — select the folder containing the videos you want to match (right panel).
+3. **Run Matching** — the tool samples multiple frames from each video, builds a fingerprint for each one, and compares them. This is slower than image matching because it processes several frames per video instead of just one.
+
+> **Note:** If you load the same folder as both source and target, the tool will skip self-comparisons (a video won't match against itself) and only fingerprint each file once.
+
+#### Rename & Copy
+
+After running either matching mode, click **Rename & Copy**, choose an output folder, and the matched videos are copied there with clean, structured names. Your original files are never touched. By default, videos are named `{image}_{001}.mp4`. If you want an extra label, type it into the optional Suffix field (e.g. `V`) to get `{image}_{001}_V.mp4`.
 
 ### Settings
 
-The GUI exposes four settings you can adjust before running:
+All settings are shared between both tabs. You can adjust them before running a match.
 
-- **Algorithm** — which visual fingerprinting method to use. `phash` works well for most cases. Try `dhash` if you're comparing colour-graded material against ungraded source images, as it focuses on structure rather than tone.
-
-- **Tolerance** — how visually similar a video frame needs to be to an image to count as a match. Lower values are stricter. The default of 4 works well for AI-generated clips that closely resemble their source. Increase to 8-12 if matches are being missed; decrease to 1-2 if you're getting false matches.
-
-- **Dark threshold** — how bright a video frame needs to be before the tool considers it "real" content rather than a black screen. This lets it skip past fade-from-black intros and dark leader frames to find the actual first frame of content. The default of 5.0 works for most videos.
-
-- **Sample frames** — how many frames to extract from each video for comparison. The default of 1 (just the first meaningful frame) is usually enough. Increase this if your videos have misleading opening frames that don't represent the actual content.
+| Setting | What it does | Default | Range | When to change it |
+|---------|-------------|---------|-------|-------------------|
+| **Algorithm** | Which visual fingerprinting method to use. Think of it as a way of summarising what an image "looks like" as a short code. | `phash` | `phash`, `dhash`, `ahash` | `phash` works for most cases. Try `dhash` if comparing colour-graded footage against ungraded source images — it focuses on shapes and edges rather than colour. `ahash` is fastest but least accurate. |
+| **Tolerance** | How different two fingerprints can be and still count as a match. Lower = stricter (fewer but more accurate matches). Higher = looser (more matches but risk of false positives). | `4` | `0`–`32` | The default of 4 works well for AI-generated clips that closely resemble their source. Increase to 8–12 if genuine matches are being missed. Decrease to 1–2 if you're getting false matches (wrong videos paired to wrong images). A value of 0 means the images must be virtually identical. |
+| **Dark threshold** | How bright a frame needs to be before the tool considers it real content rather than a black screen. Measured as average pixel brightness (0 = pure black, 255 = pure white). | `5.0` | `0.0`–`128.0` | This lets the tool skip past fade-from-black intros and dark leader frames. The default of 5.0 works for most videos. Increase if your videos have very dark (but not black) opening scenes that are being skipped. Set to 0 to disable black frame skipping entirely. |
+| **Sample frames** | How many frames to extract from each video when doing **Image → Video** matching. | `1` | `1`–`10` | The default of 1 (just the first meaningful frame) is usually enough for AI-generated clips. Increase if your videos have misleading opening frames — the tool will check multiple frames and use the best match. |
+| **Video match frames** | How many frames to sample across the full length of each video when doing **Video → Video** matching. Frames are spread evenly from start to end. | `8` | `2`–`30` | More frames = more accurate matching but slower processing. 8 is a good balance. Increase to 15–20 for long videos where the content changes significantly throughout. Decrease to 3–4 if you need faster results and the videos are short or visually consistent. |
 
 ### Other Features
 

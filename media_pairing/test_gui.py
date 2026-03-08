@@ -30,8 +30,11 @@ from media_pairing.pairing_engine import (
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
 
+    # Verify the native tkdnd library actually loads.
+    _test_root = TkinterDnD.Tk()
+    _test_root.destroy()
     HAS_DND = True
-except ImportError:
+except (ImportError, RuntimeError):
     HAS_DND = False
 
 logger = logging.getLogger("media_pairing")
@@ -83,11 +86,13 @@ class MediaPairingGUI:
             self.root = tk.Tk()
 
         self.root.title("Media Pairing Test Tool")
-        self.root.geometry("920x850")
-        self.root.minsize(700, 600)
+        self.root.geometry("960x900")
+        self.root.minsize(750, 650)
 
         self.image_paths: list[str] = []
         self.video_paths: list[str] = []
+        self.source_video_paths: list[str] = []
+        self.target_video_paths: list[str] = []
         self._matching = False
         self._last_result: Optional[PairingResult] = None
         self._last_rename_result: Optional[RenameResult] = None
@@ -100,146 +105,108 @@ class MediaPairingGUI:
     # ------------------------------------------------------------------
 
     def _build_ui(self) -> None:
-        # Top frame: file lists (images + videos side by side)
-        file_frame = ttk.LabelFrame(self.root, text="Files", padding=6)
-        file_frame.pack(fill="x", padx=8, pady=(8, 4))
-
-        # Load Folder button — scans a directory for images and videos
-        folder_frame = ttk.Frame(file_frame)
-        folder_frame.pack(fill="x", pady=(0, 4))
-        ttk.Button(
-            folder_frame, text="Load Folder", command=self._load_folder
-        ).pack(side="left")
         self.recursive_var = tk.BooleanVar(value=True)
-        ttk.Checkbutton(
-            folder_frame, text="Recursive", variable=self.recursive_var
-        ).pack(side="left", padx=(8, 0))
 
-        # Image list
-        img_frame = ttk.Frame(file_frame)
-        img_frame.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        # --- Tabbed notebook for matching modes ---
+        self.notebook = ttk.Notebook(self.root)
+        self.notebook.pack(fill="x", padx=8, pady=(8, 4))
 
-        ttk.Label(img_frame, text="Images").pack(anchor="w")
-        self.image_listbox = tk.Listbox(img_frame, height=6, selectmode="extended")
-        self.image_listbox.pack(fill="both", expand=True)
-        self._register_drop(self.image_listbox, "image")
-        self._bind_context_menu(self.image_listbox, "image")
+        self._build_image_video_tab()
+        self._build_video_video_tab()
 
-        btn_frame_img = ttk.Frame(img_frame)
-        btn_frame_img.pack(fill="x", pady=(2, 0))
-        ttk.Button(btn_frame_img, text="+ Add Files", command=self._add_images).pack(
-            side="left"
-        )
-        ttk.Button(
-            btn_frame_img, text="Remove Selected", command=self._remove_selected_images
-        ).pack(side="left", padx=4)
-
-        # Video list
-        vid_frame = ttk.Frame(file_frame)
-        vid_frame.pack(side="left", fill="both", expand=True, padx=(4, 0))
-
-        ttk.Label(vid_frame, text="Videos").pack(anchor="w")
-        self.video_listbox = tk.Listbox(vid_frame, height=6, selectmode="extended")
-        self.video_listbox.pack(fill="both", expand=True)
-        self._register_drop(self.video_listbox, "video")
-        self._bind_context_menu(self.video_listbox, "video")
-
-        btn_frame_vid = ttk.Frame(vid_frame)
-        btn_frame_vid.pack(fill="x", pady=(2, 0))
-        ttk.Button(btn_frame_vid, text="+ Add Files", command=self._add_videos).pack(
-            side="left"
-        )
-        ttk.Button(
-            btn_frame_vid,
-            text="Remove Selected",
-            command=self._remove_selected_videos,
-        ).pack(side="left", padx=4)
-
-        # Settings frame
+        # Settings frame (shared)
         settings_frame = ttk.LabelFrame(self.root, text="Settings", padding=6)
         settings_frame.pack(fill="x", padx=8, pady=4)
 
-        row = ttk.Frame(settings_frame)
-        row.pack(fill="x")
+        row1 = ttk.Frame(settings_frame)
+        row1.pack(fill="x")
 
-        ttk.Label(row, text="Algorithm:").pack(side="left")
+        ttk.Label(row1, text="Algorithm:").pack(side="left")
         self.algo_var = tk.StringVar(value="phash")
-        algo_combo = ttk.Combobox(
-            row,
+        ttk.Combobox(
+            row1,
             textvariable=self.algo_var,
             values=["phash", "dhash", "ahash"],
             state="readonly",
             width=8,
-        )
-        algo_combo.pack(side="left", padx=(4, 16))
+        ).pack(side="left", padx=(4, 16))
 
-        ttk.Label(row, text="Tolerance:").pack(side="left")
+        ttk.Label(row1, text="Tolerance:").pack(side="left")
         self.tolerance_var = tk.IntVar(value=4)
-        ttk.Spinbox(
-            row, textvariable=self.tolerance_var, from_=0, to=32, width=4
-        ).pack(side="left", padx=(4, 16))
+        _sb_tol = tk.Spinbox(
+            row1, textvariable=self.tolerance_var, from_=0, to=32, width=4,
+        )
+        _sb_tol.pack(side="left", padx=(4, 16))
 
-        ttk.Label(row, text="Dark threshold:").pack(side="left")
+        ttk.Label(row1, text="Dark threshold:").pack(side="left")
         self.dark_var = tk.DoubleVar(value=5.0)
-        ttk.Spinbox(
-            row, textvariable=self.dark_var, from_=0.0, to=128.0, increment=0.5, width=5
-        ).pack(side="left", padx=(4, 16))
+        _sb_dark = tk.Spinbox(
+            row1, textvariable=self.dark_var, from_=0.0, to=128.0, increment=0.5, width=5,
+        )
+        _sb_dark.pack(side="left", padx=(4, 16))
 
-        ttk.Label(row, text="Sample frames:").pack(side="left")
+        ttk.Label(row1, text="Sample frames:").pack(side="left")
         self.sample_var = tk.IntVar(value=1)
-        ttk.Spinbox(
-            row, textvariable=self.sample_var, from_=1, to=10, width=4
-        ).pack(side="left", padx=(4, 0))
-
-        # Action buttons
-        action_frame = ttk.Frame(self.root)
-        action_frame.pack(fill="x", padx=8, pady=4)
-
-        self.run_btn = ttk.Button(
-            action_frame, text="Run Matching", command=self._run_matching
+        _sb_sf = tk.Spinbox(
+            row1, textvariable=self.sample_var, from_=1, to=10, width=4,
         )
-        self.run_btn.pack(side="left")
+        _sb_sf.pack(side="left", padx=(4, 16))
 
-        ttk.Button(action_frame, text="Clear All", command=self._clear_all).pack(
-            side="left", padx=8
+        ttk.Label(row1, text="Video match frames:").pack(side="left")
+        self.video_match_frames_var = tk.IntVar(value=8)
+        _sb_vmf = tk.Spinbox(
+            row1, textvariable=self.video_match_frames_var, from_=2, to=30, width=4,
         )
+        _sb_vmf.pack(side="left", padx=(4, 0))
 
-        ttk.Label(action_frame, text="Output suffix (optional):").pack(
+        # Action buttons — row 1: primary actions
+        action_frame1 = ttk.Frame(self.root)
+        action_frame1.pack(fill="x", padx=8, pady=(4, 0))
+
+        ttk.Button(
+            action_frame1, text="Clear All", command=self._clear_all
+        ).pack(side="left")
+
+        ttk.Label(action_frame1, text="Output suffix:").pack(
             side="left", padx=(16, 0)
         )
         self.suffix_var = tk.StringVar(value="")
         self.suffix_entry = ttk.Entry(
-            action_frame, textvariable=self.suffix_var, width=10
+            action_frame1, textvariable=self.suffix_var, width=10
         )
         self.suffix_entry.pack(side="left", padx=(4, 4))
 
-        ttk.Label(action_frame, text="Strip from image name:").pack(
+        ttk.Label(action_frame1, text="Strip from name:").pack(
             side="left", padx=(8, 0)
         )
         self.strip_suffix_var = tk.StringVar(value="_S")
         ttk.Entry(
-            action_frame, textvariable=self.strip_suffix_var, width=8
+            action_frame1, textvariable=self.strip_suffix_var, width=8
         ).pack(side="left", padx=(4, 4))
 
         self.rename_btn = ttk.Button(
-            action_frame,
+            action_frame1,
             text="Rename & Copy",
             command=self._rename_and_copy,
             state="disabled",
         )
         self.rename_btn.pack(side="left", padx=4)
 
-        ttk.Button(
-            action_frame, text="Export Results (JSON)", command=self._export_results
-        ).pack(side="right")
+        # Action buttons — row 2: export & log
+        action_frame2 = ttk.Frame(self.root)
+        action_frame2.pack(fill="x", padx=8, pady=(2, 4))
 
         ttk.Button(
-            action_frame, text="Export to Excel", command=self._export_to_excel
-        ).pack(side="right", padx=(0, 8))
+            action_frame2, text="Export Results (JSON)", command=self._export_results
+        ).pack(side="left")
 
-        ttk.Button(action_frame, text="Copy Log", command=self._copy_log).pack(
-            side="right", padx=8
-        )
+        ttk.Button(
+            action_frame2, text="Export to Excel", command=self._export_to_excel
+        ).pack(side="left", padx=8)
+
+        ttk.Button(
+            action_frame2, text="Copy Log", command=self._copy_log
+        ).pack(side="left", padx=(0, 8))
 
         # Results text
         results_frame = ttk.LabelFrame(self.root, text="Results", padding=4)
@@ -278,6 +245,108 @@ class MediaPairingGUI:
         self.log_text.tag_configure("error", foreground="#b71c1c")
         self.log_text.tag_configure("warning", foreground="#e65100")
         self.log_text.tag_configure("info", foreground="#212121")
+
+    def _build_image_video_tab(self) -> None:
+        """Build the Image -> Video matching tab."""
+        tab = ttk.Frame(self.notebook, padding=6)
+        self.notebook.add(tab, text="Image \u2192 Video")
+
+        # Load Folder buttons
+        folder_frame = ttk.Frame(tab)
+        folder_frame.pack(fill="x", pady=(0, 4))
+        ttk.Button(
+            folder_frame, text="Load Image Folder", command=self._load_image_folder
+        ).pack(side="left")
+        ttk.Button(
+            folder_frame, text="Load Video Folder", command=self._load_video_folder
+        ).pack(side="left", padx=8)
+        ttk.Checkbutton(
+            folder_frame, text="Recursive", variable=self.recursive_var
+        ).pack(side="left", padx=(8, 0))
+        self.run_btn = ttk.Button(
+            folder_frame, text="Run Matching", command=self._run_matching
+        )
+        self.run_btn.pack(side="right")
+
+        lists_frame = ttk.Frame(tab)
+        lists_frame.pack(fill="both", expand=True)
+
+        # Image list
+        img_frame = ttk.Frame(lists_frame)
+        img_frame.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        ttk.Label(img_frame, text="Images").pack(anchor="w")
+        self.image_listbox = tk.Listbox(img_frame, height=5, selectmode="extended")
+        self.image_listbox.pack(fill="both", expand=True)
+        self._register_drop(self.image_listbox, "image")
+        self._bind_context_menu(self.image_listbox, "image")
+        btn_img = ttk.Frame(img_frame)
+        btn_img.pack(fill="x", pady=(2, 0))
+        ttk.Button(btn_img, text="+ Add Files", command=self._add_images).pack(side="left")
+        ttk.Button(btn_img, text="Remove Selected", command=self._remove_selected_images).pack(side="left", padx=4)
+
+        # Video list
+        vid_frame = ttk.Frame(lists_frame)
+        vid_frame.pack(side="left", fill="both", expand=True, padx=(4, 0))
+        ttk.Label(vid_frame, text="Videos").pack(anchor="w")
+        self.video_listbox = tk.Listbox(vid_frame, height=5, selectmode="extended")
+        self.video_listbox.pack(fill="both", expand=True)
+        self._register_drop(self.video_listbox, "video")
+        self._bind_context_menu(self.video_listbox, "video")
+        btn_vid = ttk.Frame(vid_frame)
+        btn_vid.pack(fill="x", pady=(2, 0))
+        ttk.Button(btn_vid, text="+ Add Files", command=self._add_videos).pack(side="left")
+        ttk.Button(btn_vid, text="Remove Selected", command=self._remove_selected_videos).pack(side="left", padx=4)
+
+    def _build_video_video_tab(self) -> None:
+        """Build the Video -> Video matching tab."""
+        tab = ttk.Frame(self.notebook, padding=6)
+        self.notebook.add(tab, text="Video \u2192 Video")
+
+        # Load Folder button
+        folder_frame = ttk.Frame(tab)
+        folder_frame.pack(fill="x", pady=(0, 4))
+        ttk.Button(
+            folder_frame, text="Load Source Folder", command=self._load_source_video_folder
+        ).pack(side="left")
+        ttk.Button(
+            folder_frame, text="Load Target Folder", command=self._load_target_video_folder
+        ).pack(side="left", padx=8)
+        ttk.Checkbutton(
+            folder_frame, text="Recursive", variable=self.recursive_var
+        ).pack(side="left", padx=(8, 0))
+        self.run_vv_btn = ttk.Button(
+            folder_frame, text="Run Matching", command=self._run_video_matching
+        )
+        self.run_vv_btn.pack(side="right")
+
+        lists_frame = ttk.Frame(tab)
+        lists_frame.pack(fill="both", expand=True)
+
+        # Source videos list
+        src_frame = ttk.Frame(lists_frame)
+        src_frame.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        ttk.Label(src_frame, text="Source Videos (name provider)").pack(anchor="w")
+        self.source_video_listbox = tk.Listbox(src_frame, height=5, selectmode="extended")
+        self.source_video_listbox.pack(fill="both", expand=True)
+        self._register_drop(self.source_video_listbox, "source_video")
+        self._bind_context_menu(self.source_video_listbox, "source_video")
+        btn_src = ttk.Frame(src_frame)
+        btn_src.pack(fill="x", pady=(2, 0))
+        ttk.Button(btn_src, text="+ Add Files", command=self._add_source_videos).pack(side="left")
+        ttk.Button(btn_src, text="Remove Selected", command=self._remove_selected_source_videos).pack(side="left", padx=4)
+
+        # Target videos list
+        tgt_frame = ttk.Frame(lists_frame)
+        tgt_frame.pack(side="left", fill="both", expand=True, padx=(4, 0))
+        ttk.Label(tgt_frame, text="Target Videos (to be matched)").pack(anchor="w")
+        self.target_video_listbox = tk.Listbox(tgt_frame, height=5, selectmode="extended")
+        self.target_video_listbox.pack(fill="both", expand=True)
+        self._register_drop(self.target_video_listbox, "target_video")
+        self._bind_context_menu(self.target_video_listbox, "target_video")
+        btn_tgt = ttk.Frame(tgt_frame)
+        btn_tgt.pack(fill="x", pady=(2, 0))
+        ttk.Button(btn_tgt, text="+ Add Files", command=self._add_target_videos).pack(side="left")
+        ttk.Button(btn_tgt, text="Remove Selected", command=self._remove_selected_target_videos).pack(side="left", padx=4)
 
     # ------------------------------------------------------------------
     # Drag-and-drop registration
@@ -346,7 +415,13 @@ class MediaPairingGUI:
         selected = list(listbox.curselection())
         if not selected:
             return
-        store = self.image_paths if target == "image" else self.video_paths
+        store_map = {
+            "image": self.image_paths,
+            "video": self.video_paths,
+            "source_video": self.source_video_paths,
+            "target_video": self.target_video_paths,
+        }
+        store = store_map[target]
         for idx in reversed(selected):
             listbox.delete(idx)
             del store[idx]
@@ -381,6 +456,21 @@ class MediaPairingGUI:
         """Add a single file to the appropriate list, auto-sorting by extension."""
         ext = Path(path).suffix.lower()
 
+        if target == "source_video":
+            if ext in VIDEO_EXTENSIONS and path not in self.source_video_paths:
+                self.source_video_paths.append(path)
+                self.source_video_listbox.insert("end", Path(path).name)
+            elif ext not in VIDEO_EXTENSIONS:
+                logger.warning("Skipped non-video file: %s", Path(path).name)
+            return
+        if target == "target_video":
+            if ext in VIDEO_EXTENSIONS and path not in self.target_video_paths:
+                self.target_video_paths.append(path)
+                self.target_video_listbox.insert("end", Path(path).name)
+            elif ext not in VIDEO_EXTENSIONS:
+                logger.warning("Skipped non-video file: %s", Path(path).name)
+            return
+
         if target == "image" and ext in IMAGE_EXTENSIONS:
             if path not in self.image_paths:
                 self.image_paths.append(path)
@@ -401,19 +491,23 @@ class MediaPairingGUI:
         else:
             logger.warning("Skipped unrecognised file type: %s", Path(path).name)
 
-    def _load_folder(self) -> None:
-        """Open a directory chooser and stage all images and videos found."""
-        folder = filedialog.askdirectory(title="Select Root Folder")
+    def _load_image_folder(self) -> None:
+        """Open a directory chooser and stage all images found."""
+        folder = filedialog.askdirectory(title="Select Image Folder")
         if not folder:
             return
-
         result = scan_directory(folder, recursive=self.recursive_var.get())
-
         for p in result.image_paths:
             if p not in self.image_paths:
                 self.image_paths.append(p)
                 self.image_listbox.insert("end", Path(p).name)
 
+    def _load_video_folder(self) -> None:
+        """Open a directory chooser and stage all videos found."""
+        folder = filedialog.askdirectory(title="Select Video Folder")
+        if not folder:
+            return
+        result = scan_directory(folder, recursive=self.recursive_var.get())
         for p in result.video_paths:
             if p not in self.video_paths:
                 self.video_paths.append(p)
@@ -424,6 +518,58 @@ class MediaPairingGUI:
 
     def _remove_selected_videos(self) -> None:
         self._remove_from_listbox(self.video_listbox, "video")
+
+    # ------------------------------------------------------------------
+    # Video → Video file helpers
+    # ------------------------------------------------------------------
+
+    def _add_source_videos(self) -> None:
+        paths = filedialog.askopenfilenames(
+            title="Select Source Videos",
+            filetypes=[
+                ("Video files", " ".join(f"*{ext}" for ext in sorted(VIDEO_EXTENSIONS))),
+                ("All files", "*.*"),
+            ],
+        )
+        for p in paths:
+            self._add_file(p, "source_video")
+
+    def _add_target_videos(self) -> None:
+        paths = filedialog.askopenfilenames(
+            title="Select Target Videos",
+            filetypes=[
+                ("Video files", " ".join(f"*{ext}" for ext in sorted(VIDEO_EXTENSIONS))),
+                ("All files", "*.*"),
+            ],
+        )
+        for p in paths:
+            self._add_file(p, "target_video")
+
+    def _load_source_video_folder(self) -> None:
+        folder = filedialog.askdirectory(title="Select Source Video Folder")
+        if not folder:
+            return
+        result = scan_directory(folder, recursive=self.recursive_var.get())
+        for p in result.video_paths:
+            if p not in self.source_video_paths:
+                self.source_video_paths.append(p)
+                self.source_video_listbox.insert("end", Path(p).name)
+
+    def _load_target_video_folder(self) -> None:
+        folder = filedialog.askdirectory(title="Select Target Video Folder")
+        if not folder:
+            return
+        result = scan_directory(folder, recursive=self.recursive_var.get())
+        for p in result.video_paths:
+            if p not in self.target_video_paths:
+                self.target_video_paths.append(p)
+                self.target_video_listbox.insert("end", Path(p).name)
+
+    def _remove_selected_source_videos(self) -> None:
+        self._remove_from_listbox(self.source_video_listbox, "source_video")
+
+    def _remove_selected_target_videos(self) -> None:
+        self._remove_from_listbox(self.target_video_listbox, "target_video")
 
     # ------------------------------------------------------------------
     # Matching
@@ -450,6 +596,7 @@ class MediaPairingGUI:
             hash_tolerance=self.tolerance_var.get(),
             dark_threshold=self.dark_var.get(),
             sample_frames=self.sample_var.get(),
+            video_match_frames=self.video_match_frames_var.get(),
         )
 
         images = list(self.image_paths)
@@ -475,6 +622,55 @@ class MediaPairingGUI:
     def _matching_done(self) -> None:
         self._matching = False
         self.run_btn.configure(state="normal", text="Run Matching")
+        self.run_vv_btn.configure(state="normal", text="Run Matching")
+
+    def _run_video_matching(self) -> None:
+        """Run video-to-video matching using the Video → Video tab lists."""
+        if self._matching:
+            return
+
+        if not self.source_video_paths and not self.target_video_paths:
+            self._write_result(
+                "Nothing to compare \u2014 add source and target videos first.\n",
+                "stats",
+            )
+            return
+
+        self._matching = True
+        self.run_vv_btn.configure(state="disabled", text="Matching...")
+
+        # Clear previous results
+        self.results_text.configure(state="normal")
+        self.results_text.delete("1.0", "end")
+        self.results_text.configure(state="disabled")
+
+        engine = MediaPairingEngine(
+            hash_algo=self.algo_var.get(),
+            hash_tolerance=self.tolerance_var.get(),
+            dark_threshold=self.dark_var.get(),
+            sample_frames=self.sample_var.get(),
+            video_match_frames=self.video_match_frames_var.get(),
+        )
+
+        sources = list(self.source_video_paths)
+        targets = list(self.target_video_paths)
+
+        def _worker() -> None:
+            try:
+                result = engine.find_video_pairs(sources, targets)
+                self.root.after(0, self._display_result, result)
+            except Exception as exc:
+                logger.exception("Video matching failed")
+                self.root.after(
+                    0,
+                    self._write_result,
+                    f"ERROR: {exc}\n",
+                    "error_result",
+                )
+            finally:
+                self.root.after(0, self._matching_done)
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _display_result(self, result: PairingResult) -> None:
         self._last_result = result
@@ -537,8 +733,12 @@ class MediaPairingGUI:
     def _clear_all(self) -> None:
         self.image_paths.clear()
         self.video_paths.clear()
+        self.source_video_paths.clear()
+        self.target_video_paths.clear()
         self.image_listbox.delete(0, "end")
         self.video_listbox.delete(0, "end")
+        self.source_video_listbox.delete(0, "end")
+        self.target_video_listbox.delete(0, "end")
         self.results_text.configure(state="normal")
         self.results_text.delete("1.0", "end")
         self.results_text.configure(state="disabled")
