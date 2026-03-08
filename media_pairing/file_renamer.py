@@ -142,10 +142,12 @@ class MediaFileRenamer:
         # Scan output folder for existing sequences
         existing_seqs = self.scan_existing_sequences()
 
-        # Group pairs by image path
+        # Group pairs by source path (supports both image-to-video and
+        # video-to-video results via the "source" or "image" key).
         image_to_pairs: dict[str, list[dict]] = defaultdict(list)
         for pair in pairing_result.pairs:
-            image_to_pairs[pair["image"]].append(pair)
+            source_key = pair.get("source", pair["image"])
+            image_to_pairs[source_key].append(pair)
 
         planned: list[dict] = []
         seen_stems: dict[str, int] = {}  # lowercase stem → count (collision tracking)
@@ -172,10 +174,13 @@ class MediaFileRenamer:
                 pairs,
                 key=lambda p: (
                     TRIAGE_PRIORITY.get(
-                        triage_map.get(p["video"], "unknown"), 1
+                        triage_map.get(
+                            p.get("target", p["video"]), "unknown"
+                        ),
+                        1,
                     ),
                     p["distance"],
-                    Path(p["video"]).name,
+                    Path(p.get("target", p["video"])).name,
                 ),
             )
 
@@ -183,7 +188,7 @@ class MediaFileRenamer:
             start_idx = existing_seqs.get(dest_stem, 0) + 1
 
             for idx, pair in enumerate(sorted_pairs, start=start_idx):
-                video_ext = Path(pair["video"]).suffix
+                video_ext = Path(pair.get("target", pair["video"])).suffix
                 seq = f"{idx:0{self.seq_padding}d}"
                 if self.suffix:
                     dest_name = f"{dest_stem}_{seq}_{self.suffix}{video_ext}"
@@ -191,7 +196,7 @@ class MediaFileRenamer:
                     dest_name = f"{dest_stem}_{seq}{video_ext}"
                 dest_video = self.output_dir / dest_name
                 planned.append({
-                    "source": pair["video"],
+                    "source": pair.get("target", pair["video"]),
                     "destination": str(dest_video),
                     "type": "video",
                 })
